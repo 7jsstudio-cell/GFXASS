@@ -28,13 +28,17 @@ app.use(express.json());
 app.use(cors());
 app.use(express.static(path.join(__dirname, "public")));
 
-// MySQL pool
-const db = await mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
+import pkg from 'pg';
+const { Pool } = pkg;
+
+const db = new Pool({
+  connectionString: "postgresql://askjwu_user:8maVyJaJCbxGXxZlcZHqsz6HlZAr0Z2I@dpg-d2ujvc3e5dus73eqv5r0-a.oregon-postgres.render.com/askjwu",
+  ssl: { rejectUnauthorized: false } // required for Render
 });
+
+// Example query
+const res = await db.query('SELECT * FROM sales_orders LIMIT 5');
+console.log(res.rows);
 
 // OpenAI client
 const openai = new OpenAI({ apiKey: OPENAI_KEY });
@@ -105,15 +109,17 @@ function summarizeERPData(erpData) {
 // Insert/update sales orders in MySQL
 async function upsertSalesOrders(records) {
   for (const r of records) {
-    await db.execute(
-      `INSERT INTO sales_orders 
-        (so_pk, so_upk, DateCreated_TransH, ContractDescription_TransH, PreparedBy_TransH, ApprovedBy_TransH, 
-         TotalAmount_TransH, PONo_TransH, Memo_TransH, Status_TransH, SubTotalVatEx_TransH, TaxAmount_TransH,
-         sl_pk, sl_upk, Name_Loc, Name_Cust, Name_Empl, Name_Dept) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE 
-        TotalAmount_TransH = VALUES(TotalAmount_TransH),
-        Status_TransH = VALUES(Status_TransH)`,
+    await db.query(
+      `INSERT INTO sales_orders (
+        so_pk, so_upk, DateCreated_TransH, ContractDescription_TransH, PreparedBy_TransH,
+        ApprovedBy_TransH, TotalAmount_TransH, PONo_TransH, Memo_TransH, Status_TransH,
+        SubTotalVatEx_TransH, TaxAmount_TransH, sl_pk, sl_upk, Name_Loc, Name_Cust,
+        Name_Empl, Name_Dept
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+      ON CONFLICT (so_pk) DO UPDATE SET
+        TotalAmount_TransH = EXCLUDED.TotalAmount_TransH,
+        Status_TransH = EXCLUDED.Status_TransH`,
       [
         r.so_pk,
         r.so_upk,
@@ -137,7 +143,6 @@ async function upsertSalesOrders(records) {
     );
   }
 }
-
 // Merge new data into in-memory storage
 async function mergeNewData(newData) {
   allERPData = [...allERPData.filter(old => !newData.some(n => n.so_upk === old.so_upk)), ...newData];
