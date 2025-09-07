@@ -9,9 +9,18 @@ import OpenAI from "openai";
 import { fileURLToPath } from "url";
 
 dotenv.config();
+console.log("EMPL_PK =", process.env.EMPL_PK);
+console.log("PREPARED_BY =", process.env.PREPARED_BY);
+console.log("LOCATION_PK =", process.env.LOCATION_PK);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const EMPL_PK = process.env.EMPL_PK || "default_empl_pk";
+const PREPARED_BY = process.env.PREPARED_BY || "default_prepared_by";
+const LOCATION_PK = process.env.LOCATION_PK || "default_location_pk";
+const ERP_API = process.env.ERP_API || "http://gsuite.graphicstar.com.ph/api/get_sales_orders";
+const TOKEN = process.env.ERP_TOKEN;       // Already in your env
+const OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 const app = express();
 app.use(express.json());
