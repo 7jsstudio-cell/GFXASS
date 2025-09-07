@@ -150,31 +150,60 @@ async function mergeNewData(newData) {
 }
 
 // Preload ERP data per year
+// Replace your preloadERPData() with this version:
+
 async function preloadERPData() {
   const startYear = 2020;
   const endYear = new Date().getFullYear();
 
   for (let year = startYear; year <= endYear; year++) {
-    console.log(`Fetching ERP data for year ${year}...`);
+    console.log(`\n🔹 Fetching ERP data for year ${year}...`);
+
     const payload = {
       empl_pk: EMPL_PK,
       preparedBy: PREPARED_BY,
       viewAll: 1,
-      filterDate: { filter: "range", date1: { hide: false, date: `${year}-01-01` }, date2: { hide: false, date: `${year}-12-31` } },
+      filterDate: { 
+        filter: "range", 
+        date1: { hide: false, date: `${year}-01-01` }, 
+        date2: { hide: false, date: `${year}-12-31` } 
+      },
       limit: 500,
       offset: 0,
       locationPK: LOCATION_PK
     };
 
+    // Fetch ERP API
     const rawData = await fetchAllSalesOrders(payload);
+    console.log(`[ERP API] Year ${year}: fetched ${rawData.length} records`);
+
+    if (!rawData.length) {
+      console.warn(`[ERP API] ⚠️ No records fetched for year ${year}`);
+    }
+
+    // Summarize ERP data
     const summarized = summarizeERPData(rawData);
+    console.log(`[Summarize] Year ${year}: ${summarized.length} summarized records`);
 
+    // Merge in-memory
     await mergeNewData(summarized);
-    await upsertSalesOrders(rawData);
+    console.log(`[Merge] Total in-memory ERP records: ${allERPData.length}`);
 
-    console.log(`✅ Completed loading year ${year} with ${summarized.length} records`);
+    // Insert/Update DB
+    if (rawData.length > 0) {
+      try {
+        await upsertSalesOrders(rawData);
+        const dbCount = await db.query('SELECT COUNT(*) FROM sales_orders');
+        console.log(`[DB] Total records in sales_orders table after year ${year}: ${dbCount.rows[0].count}`);
+      } catch (err) {
+        console.error(`[DB] Error inserting/updating sales_orders for year ${year}:`, err);
+      }
+    }
+
+    console.log(`✅ Completed loading year ${year}`);
   }
 }
+
 
 // Update ERP data every minute
 setInterval(async () => {
