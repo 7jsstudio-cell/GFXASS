@@ -107,15 +107,32 @@ async function upsertSalesOrders(records) {
   for (const r of records) {
     await db.execute(
       `INSERT INTO sales_orders 
-        (so_pk, so_upk, DateCreated, ContractDescription, PreparedBy, ApprovedBy, TotalAmount, PONo, Memo, Status, SubTotalVatEx, TaxAmount, sl_pk, sl_upk, Name_Loc, Name_Cust, Name_Empl, Name_Dept) 
+        (so_pk, so_upk, DateCreated_TransH, ContractDescription_TransH, PreparedBy_TransH, ApprovedBy_TransH, 
+         TotalAmount_TransH, PONo_TransH, Memo_TransH, Status_TransH, SubTotalVatEx_TransH, TaxAmount_TransH,
+         sl_pk, sl_upk, Name_Loc, Name_Cust, Name_Empl, Name_Dept) 
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON DUPLICATE KEY UPDATE 
-        TotalAmount = VALUES(TotalAmount),
-        Status = VALUES(Status)`,
+        TotalAmount_TransH = VALUES(TotalAmount_TransH),
+        Status_TransH = VALUES(Status_TransH)`,
       [
-        r.so_pk, r.so_upk, r.DateCreated_TransH, r.ContractDescription_TransH, r.PreparedBy_TransH,
-        r.ApprovedBy_TransH, r.TotalAmount_TransH, r.PONo_TransH, r.Memo_TransH, r.Status_TransH,
-        r.SubTotalVatEx_TransH, r.TaxAmount_TransH, r.sl_pk, r.sl_upk, r.Name_Loc, r.Name_Cust, r.Name_Empl, r.Name_Dept
+        r.so_pk,
+        r.so_upk,
+        r.DateCreated_TransH,
+        r.ContractDescription_TransH,
+        r.PreparedBy_TransH,
+        r.ApprovedBy_TransH,
+        r.TotalAmount_TransH,
+        r.PONo_TransH,
+        r.Memo_TransH,
+        r.Status_TransH,
+        r.SubTotalVatEx_TransH,
+        r.TaxAmount_TransH,
+        r.sl_pk,
+        r.sl_upk,
+        r.Name_Loc,
+        r.Name_Cust,
+        r.Name_Empl,
+        r.Name_Dept
       ]
     );
   }
