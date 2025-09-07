@@ -9,6 +9,9 @@ import OpenAI from "openai";
 import { fileURLToPath } from "url";
 
 dotenv.config();
+console.log("EMPL_PK =", process.env.EMPL_PK);
+console.log("PREPARED_BY =", process.env.PREPARED_BY);
+console.log("LOCATION_PK =", process.env.LOCATION_PK);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
