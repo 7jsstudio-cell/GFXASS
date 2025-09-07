@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GFX ASSISTANT</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    body {
+      background: linear-gradient(135deg, #1f2937, #374151);
+      display: flex; justify-content: center; align-items: center;
+      min-height: 100vh; color: #f9fafb;
+    }
+    .chat-container {
+      background: #111827;
+      width: 100%; max-width: 600px;
+      border-radius: 15px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
+      height: 80vh;
+    }
+    h1 { text-align: center; font-size: 2rem; margin-bottom: 0.5rem; color: #fbbf24; text-shadow: 1px 1px 2px #000; }
+    #chat-window {
+      flex: 1; background-color: #1f2937; border-radius: 10px;
+      padding: 1rem; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem;
+      border: 1px solid #374151;
+    }
+    .message-wrapper { display: flex; gap: 0.5rem; align-items: flex-end; }
+    .message { max-width: 70%; padding: 0.75rem 1rem; border-radius: 20px; word-wrap: break-word; line-height: 1.4; white-space: pre-wrap; position: relative; }
+    .user { align-self: flex-end; background-color: #fbbf24; color: #111827; border-bottom-right-radius: 0; }
+    .bot { align-self: flex-start; background-color: #1f2937; color: #f9fafb; border: 1px solid #374151; border-bottom-left-radius: 0; }
+    .avatar { width: 35px; height: 35px; border-radius: 50%; flex-shrink: 0; background-size: cover; background-position: center; }
+    .user-avatar { background-image: url('https://i.pinimg.com/736x/50/7a/c6/507ac6b743f0dc9242c91b0b51f02d38.jpg'); }
+    .bot-avatar { background-image: url('https://pbs.twimg.com/profile_images/3373670825/8e1c78389f8535e8989bfc3fff013e2c.jpeg'); }
+    .typing { font-style: italic; color: #fbbf24; }
+
+    .input-group { display: flex; gap: 0.5rem; }
+    input#question {
+      flex: 1; padding: 0.75rem 1rem; border-radius: 10px; border: 2px solid #374151;
+      background-color: #1f2937; color: #f9fafb; font-size: 1rem; transition: all 0.3s ease;
+    }
+    input#question:focus { outline: none; border-color: #fbbf24; box-shadow: 0 0 10px rgba(251,191,36,0.6); }
+    button {
+      padding: 0.75rem 1.5rem; border-radius: 10px; border: none;
+      background-color: #fbbf24; color: #111827; font-size: 1rem;
+      cursor: pointer; transition: all 0.3s ease; font-weight: bold;
+    }
+    button:hover { background-color: #f59e0b; transform: translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+    #chat-window::-webkit-scrollbar { width: 8px; }
+    #chat-window::-webkit-scrollbar-thumb { background-color: #fbbf24; border-radius: 4px; }
+    #chat-window::-webkit-scrollbar-track { background-color: #111827; }
+    @media (max-width: 640px) { .chat-container { padding: 0.5rem; } button { padding: 0.5rem 1rem; } }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <h1>ASK JWU (Jot With Us)</h1>
+    <div id="chat-window"></div>
+    <div class="input-group">
+      <input id="question" type="text" placeholder="Type your question..." autocomplete="off">
+      <button onclick="ask()">Send</button>
+    </div>
+  </div>
+
+  <script>
+const chatWindow = document.getElementById("chat-window");
+const input = document.getElementById("question");
+
+function addMessage(content, sender) {
+  const wrapper = document.createElement("div");
+  wrapper.classList.add("message-wrapper");
+  wrapper.style.justifyContent = sender === "user" ? "flex-end" : "flex-start";
+
+  const avatar = document.createElement("div");
+  avatar.classList.add("avatar", sender === "user" ? "user-avatar" : "bot-avatar");
+
+  const msgDiv = document.createElement("div");
+  msgDiv.classList.add("message", sender);
+
+  if (typeof content === "string") {
+    msgDiv.innerText = content;
+  } else {
+    msgDiv.appendChild(content);
+  }
+
+  if (sender === "user") {
+    wrapper.appendChild(msgDiv);
+    wrapper.appendChild(avatar);
+  } else {
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(msgDiv);
+  }
+
+  chatWindow.appendChild(wrapper);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+// Typing animation
+function showTyping() {
+  const wrapper = document.createElement("div");
+  wrapper.classList.add("message-wrapper");
+  wrapper.style.justifyContent = "flex-start";
+
+  const avatar = document.createElement("div");
+  avatar.classList.add("avatar", "bot-avatar");
+
+  const msgDiv = document.createElement("div");
+  msgDiv.classList.add("message", "bot", "typing");
+  msgDiv.innerText = "Typing...";
+
+  wrapper.appendChild(avatar);
+  wrapper.appendChild(msgDiv);
+  chatWindow.appendChild(wrapper);
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+
+  return msgDiv;
+}
+
+async function ask() {
+  const question = input.value.trim();
+  if (!question) return;
+
+  addMessage(question, "user");
+  input.value = "";
+
+  const typingEl = showTyping();
+
+  try {
+    const res = await fetch("/chatbot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question })
+    });
+    const data = await res.json();
+
+    typingEl.parentNode.remove(); // remove typing
+
+    if (data.type === "text") addMessage(data.data || "No answer received.", "bot");
+    else if (data.type === "pdf") {
+      addMessage("✅ PDF generated. Click to download.", "bot");
+      const link = document.createElement("a");
+      link.href = "data:application/pdf;base64," + data.data;
+      link.download = data.filename;
+      link.innerText = "Download PDF";
+      link.style.color = "#fbbf24";
+      link.style.textDecoration = "underline";
+      addMessage(link, "bot");
+    }
+  } catch (err) {
+    console.error("❌ Error:", err);
+    typingEl.parentNode.remove();
+    addMessage("Error connecting to chatbot.", "bot");
+  }
+}
+
+input.addEventListener("keydown", e => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    ask();
+  }
+});
+
+window.addEventListener("load", () => {
+  fetch("/reset-memory", { method: "POST" });
+});
+  </script>
+</body>
+</html>
