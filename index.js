@@ -1,58 +1,54 @@
-import mysql from "mysql2/promise";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
 import express from "express";
-import cors from "cors";
 import fetch from "node-fetch";
+import cors from "cors";
 import OpenAI from "openai";
-import axios from "axios";
+import "dotenv/config";
+import path from "path";
 import { fileURLToPath } from "url";
+import pkg from "pg";
 
-dotenv.config();
-
+const { Pool } = pkg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Environment variables
-const EMPL_PK = process.env.EMPL_PK || "default_empl_pk";
-const PREPARED_BY = process.env.PREPARED_BY || "default_prepared_by";
-const LOCATION_PK = process.env.LOCATION_PK || "default_location_pk";
-const ERP_API = process.env.ERP_API || "http://gsuite.graphicstar.com.ph/api/get_sales_orders";
-const TOKEN = process.env.ERP_TOKEN;
-const OPENAI_KEY = process.env.OPENAI_API_KEY;
-
-// Express setup
 const app = express();
 app.use(express.json());
 app.use(cors());
 app.use(express.static(path.join(__dirname, "public")));
 
-import pkg from 'pg';
-const { Pool } = pkg;
-
-const db = new Pool({
-  connectionString: "postgresql://askjwu_user:8maVyJaJCbxGXxZlcZHqsz6HlZAr0Z2I@dpg-d2ujvc3e5dus73eqv5r0-a.oregon-postgres.render.com/askjwu",
-  ssl: { rejectUnauthorized: false } // required for Render
+// PostgreSQL connection
+const pool = new Pool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT || 5432,
+  ssl: {
+    rejectUnauthorized: false // allows self-signed SSL certs
+  }
 });
 
-// Example query
-const res = await db.query('SELECT * FROM sales_orders LIMIT 5');
-console.log(res.rows);
+// ERP API details
+const ERP_API = process.env.ERP_API;
+const TOKEN = process.env.ERP_TOKEN;
+const LOCATION_PK = process.env.LOCATION_PK;
+const EMPL_PK = process.env.EMPL_PK;
+const PREPARED_BY = process.env.PREPARED_BY;
 
-// OpenAI client
-const openai = new OpenAI({ apiKey: OPENAI_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// JSON backup file
-const DATA_FILE = process.env.RENDER
-  ? path.join("/tmp", "erpData.json")
-  : path.join(__dirname, "erpData.json");
-
-// In-memory storage
+// In-memory cache
 let allERPData = [];
-if (fs.existsSync(DATA_FILE)) {
-  allERPData = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-  console.log(`✅ Loaded ${allERPData.length} ERP records from disk`);
+
+// Load existing ERP data from DB into memory
+async function loadDataFromDB() {
+  try {
+    const res = await pool.query("SELECT * FROM sales_orders");
+    allERPData = res.rows;
+    console.log(`✅ Loaded ${allERPData.length} ERP records from PostgreSQL`);
+  } catch (err) {
+    console.error("Error loading data from DB:", err);
+  }
 }
 
 // Utility
@@ -60,7 +56,7 @@ function formatPeso(amount) {
   return new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" }).format(amount);
 }
 
-// Fetch ERP API
+// Call ERP API
 async function callERP(payload) {
   try {
     const response = await fetch(ERP_API, {
@@ -92,189 +88,139 @@ async function fetchAllSalesOrders(payload) {
   return allData;
 }
 
-// Summarize ERP data
+// Summarize ERP data for DB
 function summarizeERPData(erpData) {
   return erpData.map((so) => ({
-    ...so,
+    so_pk: so.so_pk,
+    so_number: so.so_upk || "Unknown",
+    date_created: so.DateCreated_TransH || null,
+    amount: Number(so.TotalAmount_TransH || 0),
+    gp_rate: parseFloat((so.gpRate || 0).toString().replace("%", "").replace(",", "")),
+    status: so.Status_TransH || "Unknown",
     division: so.Name_Dept || "Unknown",
     salesRep: so.Name_Empl || "Unknown",
-    amount: Number(so.TotalAmount_TransH || 0),
-    gpRate: parseFloat((so.gpRate || "0").toString().replace("%", "").replace(",", "")),
-    status: so.Status_TransH,
-    date: so.DateCreated_TransH,
-    so_number: so.so_upk || "Unknown",
+    customer: so.Name_Cust || "Unknown",
+    contract_description: so.ContractDescription_TransH || "",
+    memo: so.Memo_TransH || ""
   }));
 }
 
-// Insert/update sales orders in MySQL
-async function upsertSalesOrders(records) {
-  for (const r of records) {
-    await db.query(
-      `INSERT INTO sales_orders (
-        so_pk, so_upk, DateCreated_TransH, ContractDescription_TransH, PreparedBy_TransH,
-        ApprovedBy_TransH, TotalAmount_TransH, PONo_TransH, Memo_TransH, Status_TransH,
-        SubTotalVatEx_TransH, TaxAmount_TransH, sl_pk, sl_upk, Name_Loc, Name_Cust,
-        Name_Empl, Name_Dept
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-      ON CONFLICT (so_pk) DO UPDATE SET
-        TotalAmount_TransH = EXCLUDED.TotalAmount_TransH,
-        Status_TransH = EXCLUDED.Status_TransH`,
-      [
-        r.so_pk,
-        r.so_upk,
-        r.DateCreated_TransH,
-        r.ContractDescription_TransH,
-        r.PreparedBy_TransH,
-        r.ApprovedBy_TransH,
-        r.TotalAmount_TransH,
-        r.PONo_TransH,
-        r.Memo_TransH,
-        r.Status_TransH,
-        r.SubTotalVatEx_TransH,
-        r.TaxAmount_TransH,
-        r.sl_pk,
-        r.sl_upk,
-        r.Name_Loc,
-        r.Name_Cust,
-        r.Name_Empl,
-        r.Name_Dept
-      ]
-    );
+// Merge new ERP data into DB and memory
+async function mergeNewData(newData) {
+  const existingSO = new Set(allERPData.map(o => o.so_pk));
+  const filteredNew = newData.filter(o => !existingSO.has(o.so_pk));
+
+  if (filteredNew.length === 0) return;
+
+  allERPData.push(...filteredNew);
+  console.log(`✅ Added ${filteredNew.length} new ERP records`);
+
+  // Insert into PostgreSQL
+  const client = await pool.connect();
+  try {
+    for (const so of filteredNew) {
+      await client.query(
+        `INSERT INTO sales_orders 
+        (so_pk, so_number, date_created, status, customer_name, sales_rep, division, amount, gp_rate, memo)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        ON CONFLICT (so_pk) DO NOTHING`,
+        [
+          so.so_pk,
+          so.so_number,
+          so.date_created,
+          so.status,
+          so.customer,
+          so.salesRep,
+          so.division,
+          so.amount,
+          so.gp_rate,
+          so.memo
+        ]
+      );
+    }
+    console.log("✅ ERP data stored in PostgreSQL");
+  } catch (err) {
+    console.error("DB insert error:", err);
+  } finally {
+    client.release();
   }
 }
-// Merge new data into in-memory storage
-async function mergeNewData(newData) {
-  allERPData = [...allERPData.filter(old => !newData.some(n => n.so_upk === old.so_upk)), ...newData];
-  fs.writeFileSync(DATA_FILE, JSON.stringify(allERPData, null, 2));
-}
 
-// Preload ERP data per year
-// Replace your preloadERPData() with this version:
-
+// Preload ERP data from API -> DB -> memory
 async function preloadERPData() {
   const startYear = 2020;
   const endYear = new Date().getFullYear();
 
   for (let year = startYear; year <= endYear; year++) {
-    console.log(`\n🔹 Fetching ERP data for year ${year}...`);
-
+    console.log(`Fetching ERP data for year ${year}...`);
     const payload = {
       empl_pk: EMPL_PK,
       preparedBy: PREPARED_BY,
       viewAll: 1,
-      filterDate: { 
-        filter: "range", 
-        date1: { hide: false, date: `${year}-01-01` }, 
-        date2: { hide: false, date: `${year}-12-31` } 
+      searchKey: "",
+      customerPK: null,
+      departmentPK: null,
+      filterDate: {
+        filter: "range",
+        date1: { hide: false, date: `${year}-01-01` },
+        date2: { hide: false, date: `${year}-12-31` }
       },
       limit: 500,
       offset: 0,
-      locationPK: LOCATION_PK
+      locationPK: LOCATION_PK,
+      salesRepPK: null,
+      status: "",
     };
-
-    // Fetch ERP API
     const rawData = await fetchAllSalesOrders(payload);
-    console.log(`[ERP API] Year ${year}: fetched ${rawData.length} records`);
-
-    if (!rawData.length) {
-      console.warn(`[ERP API] ⚠️ No records fetched for year ${year}`);
-    }
-
-    // Summarize ERP data
     const summarized = summarizeERPData(rawData);
-    console.log(`[Summarize] Year ${year}: ${summarized.length} summarized records`);
-
-    // Merge in-memory
     await mergeNewData(summarized);
-    console.log(`[Merge] Total in-memory ERP records: ${allERPData.length}`);
-
-    // Insert/Update DB
-    if (rawData.length > 0) {
-      try {
-        await upsertSalesOrders(rawData);
-        const dbCount = await db.query('SELECT COUNT(*) FROM sales_orders');
-        console.log(`[DB] Total records in sales_orders table after year ${year}: ${dbCount.rows[0].count}`);
-      } catch (err) {
-        console.error(`[DB] Error inserting/updating sales_orders for year ${year}:`, err);
-      }
-    }
-
-    console.log(`✅ Completed loading year ${year}`);
+    console.log(`✅ Completed loading year ${year} with ${summarized.length} records`);
   }
 }
 
-
-// Update ERP data every minute
-setInterval(async () => {
-  console.log("Updating ERP data...");
-  await preloadERPData();
-}, 60_000);
-
-// Parse question with GPT
+// GPT parse question
 async function parseQuestionWithGPT(question) {
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{
-        role: "user",
-        content: `You are an ERP assistant. Detect if this question is about ERP sales orders or general. Return JSON with intent, date, year, gpThreshold, customer, salesRep, status, topN, fields. Question: "${question}" `
-      }],
+      messages: [
+        { role: "user", content: `
+You are an ERP assistant. Return a JSON for the following question.
+Include fields: intent (count, list, topCustomers, topDivision, topSales, monthlyTotals, general),
+date (YYYY-MM-DD), year (YYYY), status, salesRep, customer, gpThreshold (if any), topN (1-3), fields (["so_number","gp_rate","amount","status"]).
+Question: "${question}"
+        ` }
+      ],
       temperature: 0
     });
 
-    let content = completion.choices[0].message.content.replace(/```json|```/g, "").trim();
+    let content = completion.choices[0].message.content.replace(/```/g, "").trim();
     let parsed = JSON.parse(content);
-
-    return {
-      intent: parsed.intent || "general",
-      date: parsed.date || null,
-      year: parsed.year || null,
-      gpThreshold: parsed.gpThreshold || null,
-      customer: parsed.customer || null,
-      salesRep: parsed.salesRep || null,
-      status: parsed.status || null,
-      topN: parsed.topN || null,
-      fields: parsed.fields || []
-    };
+    if (!parsed.intent) parsed.intent = "general";
+    parsed.customer = parsed.customer || null;
+    parsed.salesRep = parsed.salesRep || null;
+    parsed.status = parsed.status || null;
+    parsed.date = parsed.date || null;
+    parsed.year = parsed.year || null;
+    parsed.gpThreshold = parsed.gpThreshold || null;
+    parsed.topN = parsed.topN || null;
+    parsed.fields = parsed.fields || [];
+    return parsed;
   } catch (err) {
-    console.error("GPT parse error:", err);
-    return { intent: "general", date: null, year: null, gpThreshold: null, customer: null, salesRep: null, status: null, fields: [], topN: null };
+    console.error("GPT JSON parse error:", err);
+    return { intent: "general" };
   }
 }
 
-// Filter ERP orders
+// Filter orders based on parsed intent
 function filterOrders(orders, parsed) {
   let filtered = [...orders];
 
-  if (parsed.customer) {
-    const kw = parsed.customer.toLowerCase();
-    filtered = filtered.filter(o =>
-      (o.Name_Cust || "").toLowerCase().includes(kw) ||
-      (o.ContractDescription_TransH || "").toLowerCase().includes(kw) ||
-      (o.Memo_TransH || "").toLowerCase().includes(kw)
-    );
-  }
-
-  if (parsed.gpThreshold) {
-    const { operator, value } = parsed.gpThreshold;
-    filtered = filtered.filter(o => {
-      switch (operator) {
-        case ">": return o.gpRate > value;
-        case "<": return o.gpRate < value;
-        case ">=": return o.gpRate >= value;
-        case "<=": return o.gpRate <= value;
-        case "=": return o.gpRate === value;
-        default: return true;
-      }
-    });
-  }
-
-  if (parsed.salesRep) filtered = filtered.filter(o => (o.salesRep || "").toLowerCase() === parsed.salesRep.toLowerCase());
-  if (parsed.year) filtered = filtered.filter(o => o.date.startsWith(parsed.year));
-  if (parsed.date) filtered = filtered.filter(o => o.date === parsed.date);
-  if (parsed.status) filtered = filtered.filter(o => (o.status || "").trim().toLowerCase() === parsed.status.trim().toLowerCase());
-
+  if (parsed.customer) filtered = filtered.filter(o => o.customer.toLowerCase().includes(parsed.customer.toLowerCase()));
+  if (parsed.salesRep) filtered = filtered.filter(o => o.salesRep.toLowerCase() === parsed.salesRep.toLowerCase());
+  if (parsed.status) filtered = filtered.filter(o => o.status.toLowerCase() === parsed.status.toLowerCase());
+  if (parsed.date) filtered = filtered.filter(o => new Date(o.date_created).toISOString().split("T")[0] === parsed.date);
+  if (parsed.year) filtered = filtered.filter(o => new Date(o.date_created).getFullYear() === parseInt(parsed.year));
   return filtered;
 }
 
@@ -289,39 +235,77 @@ async function formatResponse(orders, parsed, question) {
     return completion.choices[0].message.content;
   }
 
-  if (!orders.length) return "No sales orders matching your query.";
+  if (!orders.length) return "No matching sales orders.";
 
-  const mapFields = (o) => parsed.fields.length
-    ? parsed.fields.map(f => `${f}: ${o[f] ?? "N/A"}`).join(" - ")
-    : `so_number: ${o.so_number} - gp_rate: ${o.gpRate} - amount: ${o.amount}`;
-
-  switch (parsed.intent) {
-    case "count":
-      const totalAmount = orders.reduce((sum, o) => sum + o.amount, 0);
-      const highestGp = Math.max(...orders.map(o => o.gpRate));
-      return `Total Orders: ${orders.length}\nTotal Amount: ${formatPeso(totalAmount)}\nHighest GP: ${highestGp.toFixed(2)}%`;
-
-    case "list": return orders.map(mapFields).join("\n");
-    case "sample": return mapFields(orders[0]);
-    case "topCustomers":
-      const customerMap = {};
-      orders.forEach(o => customerMap[o.Name_Cust] = (customerMap[o.Name_Cust] || 0) + o.amount);
-      return Object.entries(customerMap).sort((a,b)=>b[1]-a[1]).slice(0, parsed.topN || 1)
-        .map(([cust, amt], i)=>`Top ${i+1} Customer: ${cust} - ${formatPeso(amt)}`).join("\n");
-    case "topDivision":
-      const divMap = {};
-      orders.forEach(o => divMap[o.division] = (divMap[o.division] || 0) + o.amount);
-      return Object.entries(divMap).sort((a,b)=>b[1]-a[1]).slice(0, parsed.topN || 1)
-        .map(([div, amt], i)=>`Top ${i+1} Division: ${div} - ${formatPeso(amt)}`).join("\n");
-    case "topSales":
-      const salesMap = {};
-      orders.forEach(o => salesMap[o.salesRep] = (salesMap[o.salesRep] || 0) + o.amount);
-      return Object.entries(salesMap).sort((a,b)=>b[1]-a[1]).slice(0, parsed.topN || 1)
-        .map(([rep, amt], i)=>`Top ${i+1} Sales: ${rep} - ${formatPeso(amt)}`).join("\n");
-    default:
-      return "Intent not implemented.";
+  if (parsed.intent === "count") {
+    const totalAmount = orders.reduce((sum, o) => sum + o.amount, 0);
+    const highestGp = Math.max(...orders.map(o => o.gp_rate));
+    return `Total Sales Orders: ${orders.length}\nTotal Amount: ${formatPeso(totalAmount)}\nHighest GP Rate: ${highestGp.toFixed(2)}%`;
   }
+
+  if (parsed.intent === "list") {
+    return orders.map(o => `so_number: ${o.so_number} - amount: ${formatPeso(o.amount)} - gp_rate: ${o.gp_rate}% - status: ${o.status}`).join("\n");
+  }
+
+  if (parsed.intent === "topSales") {
+    const salesMap = {};
+    orders.forEach(o => { salesMap[o.salesRep] = (salesMap[o.salesRep] || 0) + o.amount; });
+    const sorted = Object.entries(salesMap).sort((a, b) => b[1] - a[1]);
+    const topN = parsed.topN || 1;
+    return sorted.slice(0, topN).map(([rep, amt], i) =>
+      `Top ${i + 1} Sales Personnel: ${rep} - Total Amount: ${formatPeso(amt)}`
+    ).join("\n");
+  }
+
+  if (parsed.intent === "topCustomers") {
+    const customerMap = {};
+    orders.forEach(o => { customerMap[o.customer] = (customerMap[o.customer] || 0) + o.amount; });
+    const sorted = Object.entries(customerMap).sort((a, b) => b[1] - a[1]);
+    const topN = parsed.topN || 1;
+    return sorted.slice(0, topN).map(([cust, amt], i) =>
+      `Top ${i + 1} Customer: ${cust} - Total Amount: ${formatPeso(amt)}`
+    ).join("\n");
+  }
+
+  if (parsed.intent === "topDivision") {
+    const divisionMap = {};
+    orders.forEach(o => { divisionMap[o.division] = (divisionMap[o.division] || 0) + o.amount; });
+    const sorted = Object.entries(divisionMap).sort((a, b) => b[1] - a[1]);
+    const topN = parsed.topN || 1;
+    return sorted.slice(0, topN).map(([div, amt], i) =>
+      `Top ${i + 1} Division: ${div} - Total Amount: ${formatPeso(amt)}`
+    ).join("\n");
+  }
+
+  if (parsed.intent === "monthlyTotals" && parsed.year && parsed.salesRep) {
+    const monthlyMap = {};
+    const validStatuses = [
+      "BILLED",
+      "PARTIALLYBILLED/PARTIALLY DELIVERED",
+      "PARTIALLY DELIVERED",
+      "PENDING BILLING",
+      "PENDING DELIVERY",
+      "JO IN-PROCESS"
+    ];
+
+    orders.forEach(o => {
+      if (!o.date_created) return;
+      if (!validStatuses.includes(o.status)) return;
+      if (o.salesRep.toLowerCase() !== parsed.salesRep.toLowerCase()) return;
+
+      const month = o.date_created.slice(0, 7);
+      monthlyMap[month] = (monthlyMap[month] || 0) + o.amount;
+    });
+
+    return Object.entries(monthlyMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, amt]) => `${month}: ${formatPeso(amt)}`)
+      .join("\n") || `No valid sales orders found for ${parsed.salesRep} in ${parsed.year}`;
+  }
+
+  return "Intent not implemented yet.";
 }
+
 
 // Chatbot endpoint
 app.post("/chatbot", async (req, res) => {
@@ -337,11 +321,13 @@ app.post("/chatbot", async (req, res) => {
   }
 });
 
-// Reset memory endpoint
+// Reset memory
 app.post("/reset-memory", (req, res) => res.json({ success: true }));
 
-// Start server and preload data
+// Start server
 app.listen(3000, async () => {
   console.log("✅ Chatbot running on http://localhost:3000");
-  await preloadERPData();
+  await loadDataFromDB();      // Load DB into memory
+  await preloadERPData();       // Fetch new ERP data and merge into DB
+  setInterval(preloadERPData, 60_000); // Auto-update ERP data every minute
 });
